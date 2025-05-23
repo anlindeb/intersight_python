@@ -20,7 +20,7 @@ $ export INTERSIGHT_API_PRIVATE_KEY=/Users/guest/Downloads/v3_SecretKey.txt
 
 $ export INTERSIGHT_API_KEY_ID=596cc...
 
-$ python chassis.py --csv_file file_name.csv
+$ python chassis.py --csv_file "file_name.csv"
 
 OR with arguments on the command line:
 
