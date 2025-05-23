@@ -24,5 +24,5 @@ $ python chassis.py --csv_file file_name.csv
 
 OR with arguments on the command line:
 
-$ python chassis.py --api-key-id 596cc --api-key-file ~/Downloads/devSecretKey.txt --api-key-legacy --csv_file file_name.csv
+$ python chassis.py --api-key-id 596cc --api-key-file ~/Downloads/devSecretKey.txt --api-key-legacy --csv_file "file_name.csv"
 
