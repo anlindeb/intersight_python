@@ -1,8 +1,11 @@
-Python SDK Install
+Python SDK Install - which is a requirement.
 
 The Intersight Python SDK is available on the Python Package Index at https://pypi.org/project/intersight/ and can be installed using pip:
-sudo pip install intersight
+
+$ sudo pip install intersight
+
 Ensure that you only have one Intersight SDK active (older Intersight SDKs may conflict):
+
 $ pip list
 Package            Version   
 ------------------ ----------
@@ -11,9 +14,11 @@ intersight         1.0.9.4437
 Intersight-OpenAPI 1.0.9.3181
 (pip uninstall any intersight SDKs that may have been previously installed)
 
-pip uninstall Intersight-OpenAPI
-Usage
+$ pip uninstall Intersight-OpenAPI
 
+
+
+Usage:
 This script uses the credentials.py module in this directory to configure API key settings. API key information can be provided as environment variables:
 
 export INTERSIGHT_API_PRIVATE_KEY=/Users/guest/Downloads/v3_SecretKey.txt
