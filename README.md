@@ -4,6 +4,10 @@ The Intersight Python SDK is available on the Python Package Index at https://py
 
 $ sudo pip install intersight
 
+or
+
+$ sudo pip3 install intersight
+
 Ensure that you only have one Intersight SDK active (older Intersight SDKs may conflict):
 
 $ pip list
