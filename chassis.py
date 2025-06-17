@@ -23,11 +23,15 @@ CHASSIS_SLOT_COUNTS = {
 }
 DEFAULT_SLOT_COUNT = 8  # Fallback slot count.
 
+# --- Configuration: Two-Slot Blade Models ---
+# Set of server models that occupy two slots.
+TWO_SLOT_MODELS = {"UCSX-410C-M7", "UCSB-B480-M5"}
+
 def main():
     if isinstance(credentials.Parser, argparse.ArgumentParser):
         parser = credentials.Parser
     else:
-        parser = credentials.Parser() 
+        parser = credentials.Parser()
 
     parser.description = 'Intersight script to get blade slot information, including models, serial numbers, and a summary of slot statuses per chassis model.'
 
@@ -37,7 +41,7 @@ def main():
         logger.info("'--csv_file' argument already defined by credentials.Parser or a parent parser.")
 
     # Create Intersight API client instance
-    client = credentials.config_credentials(parser) 
+    client = credentials.config_credentials(parser)
 
     try:
         args = parser.parse_args()
@@ -60,7 +64,7 @@ def main():
 
             logger.info("Fetching chassis list from Intersight...")
             all_chassis_response = equipment_api_instance.get_equipment_chassis_list(
-                select='Moid,Name,Model,OperState,Serial' 
+                select='Moid,Name,Model,OperState,Serial'
             )
 
             if not all_chassis_response or not hasattr(all_chassis_response, 'results') or not all_chassis_response.results:
@@ -75,13 +79,13 @@ def main():
                 chassis_model_str = chassis.model if hasattr(chassis, 'model') and chassis.model else "UNKNOWN_MODEL"
                 chassis_serial_str = chassis.serial if hasattr(chassis, 'serial') and chassis.serial else "UnknownSerial"
 
-                reported_chassis_oper_state = "UnknownChassisState" 
+                reported_chassis_oper_state = "UnknownChassisState"
                 if hasattr(chassis, 'oper_state'):
-                    chassis_state_val = chassis.oper_state 
+                    chassis_state_val = chassis.oper_state
                     if isinstance(chassis_state_val, str) and chassis_state_val.strip():
                         reported_chassis_oper_state = chassis_state_val.strip()
                     elif isinstance(chassis_state_val, str) and not chassis_state_val.strip():
-                        reported_chassis_oper_state = "operable" 
+                        reported_chassis_oper_state = "operable"
                         logger.debug(f"Chassis '{chassis_name}' (Moid: {chassis_moid}) API OperState was '{chassis_state_val}', interpreted as 'operable'.")
                     elif chassis_state_val is None:
                         reported_chassis_oper_state = "NotReported (ChassisState_is_None)"
@@ -89,7 +93,7 @@ def main():
                     logger.warning(f"Chassis '{chassis_name}' (Moid: {chassis_moid}) is missing OperState attribute.")
 
                 total_slots = CHASSIS_SLOT_COUNTS.get(chassis_model_str, DEFAULT_SLOT_COUNT)
-                
+
                 if chassis_model_str == "UNKNOWN_MODEL":
                     logger.warning(f"Chassis model is unknown for '{chassis_name}' (Moid: {chassis_moid}). Defaulting to {total_slots} slots. Please verify.")
                 elif chassis_model_str not in CHASSIS_SLOT_COUNTS:
@@ -102,19 +106,19 @@ def main():
                     select='SlotId,Moid,Model,Serial'
                 )
 
-                populated_slots_details = {} 
+                populated_slots_details = {}
                 if blades_in_chassis_response and hasattr(blades_in_chassis_response, 'results') and blades_in_chassis_response.results:
                     logger.debug(f"Found {len(blades_in_chassis_response.results)} blades in chassis '{chassis_name}'.")
                     for blade in blades_in_chassis_response.results:
                         blade_debug_id = blade.moid if hasattr(blade, 'moid') else 'N/A'
-                        blade_model_str = "UnknownBladeModel" 
+                        blade_model_str = "UnknownBladeModel"
                         if hasattr(blade, 'model') and blade.model:
                             blade_model_str = blade.model
-                        
+
                         blade_serial_str = "UnknownBladeSerial"
                         if hasattr(blade, 'serial') and blade.serial:
                             blade_serial_str = blade.serial
-                        
+
                         if hasattr(blade, 'slot_id') and blade.slot_id is not None:
                             try:
                                 slot_id = int(blade.slot_id)
@@ -130,19 +134,37 @@ def main():
                 else:
                     logger.debug(f"No blades found via API query for chassis '{chassis_name}' or unexpected API response. All slots will be marked as Empty.")
 
+                # --- MODIFICATION START: Handle multi-slot blades ---
+                # Create a new dictionary to hold all occupied slots, including the second
+                # slot for two-slot servers, by expanding the initial slot details.
+                expanded_slots_details = {}
+                for slot_id, details in populated_slots_details.items():
+                    expanded_slots_details[slot_id] = details
+                    # If the blade model is one of the two-slot models, mark the next slot as occupied as well.
+                    if details['model'] in TWO_SLOT_MODELS:
+                        next_slot_id = slot_id + 1
+                        if next_slot_id <= total_slots:
+                            # The next slot is occupied by the same blade.
+                            expanded_slots_details[next_slot_id] = details
+                        else:
+                            logger.warning(f"Two-slot blade '{details['model']}' in slot {slot_id} of chassis '{chassis_name}' extends beyond the chassis capacity of {total_slots} slots.")
+
                 # Ensure the chassis model key exists in the summary dictionary
                 model_summary_counts.setdefault(chassis_model_str, {})
 
-                for slot_num in range(1, total_slots + 1): 
-                    final_oper_state_for_csv = "Empty" 
-                    current_blade_model = "" 
+                # Iterate through all slots and write a row for each one.
+                for slot_num in range(1, total_slots + 1):
+                    final_oper_state_for_csv = "Empty"
+                    current_blade_model = ""
                     current_blade_serial = ""
 
-                    if slot_num in populated_slots_details:
+                    # Check the expanded dictionary to see if the slot is occupied.
+                    if slot_num in expanded_slots_details:
+                        details = expanded_slots_details[slot_num]
                         final_oper_state_for_csv = reported_chassis_oper_state
-                        current_blade_model = populated_slots_details[slot_num]['model'] 
-                        current_blade_serial = populated_slots_details[slot_num]['serial']
-                    
+                        current_blade_model = details['model']
+                        current_blade_serial = details['serial']
+
                     writer.writerow({
                         'Chassis': chassis_name,
                         'ChassisModel': chassis_model_str,
@@ -153,9 +175,10 @@ def main():
                         'OperState': final_oper_state_for_csv
                     })
 
-                    # Update summary counts for the current chassis model and status
+                    # Update summary counts. This will now correctly count both slots of a two-slot server as 'OK' (or other state).
                     model_summary_counts[chassis_model_str].setdefault(final_oper_state_for_csv, 0)
                     model_summary_counts[chassis_model_str][final_oper_state_for_csv] += 1
+                # --- MODIFICATION END ---
                 
                 logger.info(f"Finished writing slot information for chassis '{chassis_name}'.")
 
@@ -168,9 +191,7 @@ def main():
             writer.writerow({})
 
             # Write a title for the summary section
-            # To make it span or look like a title, we put the title in the first column
-            # and leave others blank for this specific row.
-            summary_title_row = {field: '' for field in fieldnames} # Create a dict with all fields blank
+            summary_title_row = {field: '' for field in fieldnames}
             summary_title_row['Chassis'] = "--- Summary by Chassis Model ---"
             writer.writerow(summary_title_row)
             
@@ -195,7 +216,7 @@ def main():
 
     except intersight.OpenApiException as e:
         error_details = f"Status: {e.status}, Reason: {e.reason}"
-        if e.body: error_details += f", Body: {e.body[:500]}..." 
+        if e.body: error_details += f", Body: {e.body[:500]}..."
         if e.headers: error_details += f", Headers: {e.headers}"
         logger.error(f"Intersight API Exception occurred: {error_details}")
         traceback.print_exc()
@@ -213,4 +234,4 @@ def main():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    main()
+    main()      
