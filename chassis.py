@@ -6,7 +6,6 @@ import intersight.api.compute_api
 import intersight.api.equipment_api # Required for fetching chassis information
 import credentials # Assuming this module handles API client setup and CLI arguments
 import argparse # For argument parsing
-# import collections # Not strictly needed if using dict.setdefault
 
 # Standard logging format
 FORMAT = '%(asctime)-15s [%(levelname)s] [%(filename)s:%(lineno)s] %(message)s'
@@ -14,17 +13,14 @@ logging.basicConfig(format=FORMAT, level=logging.INFO) # Set to INFO for product
 logger = logging.getLogger('openapi')
 
 # --- Configuration: Chassis Model to Slot Count Mapping ---
-# This dictionary maps known chassis models to their typical number of blade slots.
 CHASSIS_SLOT_COUNTS = {
     "UCSB-5108-AC2": 8,
     "UCSB-5108-DC2": 8,
     "UCSX-9508": 8,
-    # Add other chassis models and their respective blade slot counts here.
 }
-DEFAULT_SLOT_COUNT = 8  # Fallback slot count.
+DEFAULT_SLOT_COUNT = 8
 
 # --- Configuration: Two-Slot Blade Models ---
-# Set of server models that occupy two slots.
 TWO_SLOT_MODELS = {"UCSX-410C-M7", "UCSB-B480-M5"}
 
 def main():
@@ -40,7 +36,6 @@ def main():
     except argparse.ArgumentError:
         logger.info("'--csv_file' argument already defined by credentials.Parser or a parent parser.")
 
-    # Create Intersight API client instance
     client = credentials.config_credentials(parser)
 
     try:
@@ -49,11 +44,9 @@ def main():
         logger.error(f"Argument parsing failed. Ensure all required arguments are provided. Error: {e}")
         return
 
-    # Dictionary to store summary counts: model_summary_counts[chassis_model][status] = count
     model_summary_counts = {}
 
     try:
-        # Initialize API instances
         compute_api_instance = intersight.api.compute_api.ComputeApi(client)
         equipment_api_instance = intersight.api.equipment_api.EquipmentApi(client)
 
@@ -86,20 +79,14 @@ def main():
                         reported_chassis_oper_state = chassis_state_val.strip()
                     elif isinstance(chassis_state_val, str) and not chassis_state_val.strip():
                         reported_chassis_oper_state = "operable"
-                        logger.debug(f"Chassis '{chassis_name}' (Moid: {chassis_moid}) API OperState was '{chassis_state_val}', interpreted as 'operable'.")
                     elif chassis_state_val is None:
                         reported_chassis_oper_state = "NotReported (ChassisState_is_None)"
                 else:
-                    logger.warning(f"Chassis '{chassis_name}' (Moid: {chassis_moid}) is missing OperState attribute.")
+                    logger.warning(f"Chassis '{chassis_name}' is missing OperState attribute.")
 
                 total_slots = CHASSIS_SLOT_COUNTS.get(chassis_model_str, DEFAULT_SLOT_COUNT)
 
-                if chassis_model_str == "UNKNOWN_MODEL":
-                    logger.warning(f"Chassis model is unknown for '{chassis_name}' (Moid: {chassis_moid}). Defaulting to {total_slots} slots. Please verify.")
-                elif chassis_model_str not in CHASSIS_SLOT_COUNTS:
-                    logger.warning(f"Chassis model '{chassis_model_str}' for '{chassis_name}' (Moid: {chassis_moid}) is not in CHASSIS_SLOT_COUNTS map. Defaulting to {total_slots} slots. Consider updating the map.")
-
-                logger.info(f"Processing Chassis: '{chassis_name}', Model: '{chassis_model_str}', Serial: '{chassis_serial_str}', Expected Slots: {total_slots}, Reported OperState for its blades: '{reported_chassis_oper_state}'")
+                logger.info(f"Processing Chassis: '{chassis_name}', Model: '{chassis_model_str}', Serial: '{chassis_serial_str}', Slots: {total_slots}")
 
                 blades_in_chassis_response = compute_api_instance.get_compute_blade_list(
                     filter=f"EquipmentChassis.Moid eq '{chassis_moid}'",
@@ -108,57 +95,53 @@ def main():
 
                 populated_slots_details = {}
                 if blades_in_chassis_response and hasattr(blades_in_chassis_response, 'results') and blades_in_chassis_response.results:
-                    logger.debug(f"Found {len(blades_in_chassis_response.results)} blades in chassis '{chassis_name}'.")
                     for blade in blades_in_chassis_response.results:
-                        blade_debug_id = blade.moid if hasattr(blade, 'moid') else 'N/A'
-                        blade_model_str = "UnknownBladeModel"
-                        if hasattr(blade, 'model') and blade.model:
-                            blade_model_str = blade.model
-
-                        blade_serial_str = "UnknownBladeSerial"
-                        if hasattr(blade, 'serial') and blade.serial:
-                            blade_serial_str = blade.serial
-
                         if hasattr(blade, 'slot_id') and blade.slot_id is not None:
                             try:
                                 slot_id = int(blade.slot_id)
                                 populated_slots_details[slot_id] = {
-                                    'model': blade_model_str,
-                                    'serial': blade_serial_str
+                                    'model': getattr(blade, 'model', 'UnknownBladeModel'),
+                                    'serial': getattr(blade, 'serial', 'UnknownBladeSerial')
                                 }
-                                logger.debug(f"  Chassis '{chassis_name}': Blade (Moid: {blade_debug_id}, Model: {blade_model_str}, Serial: {blade_serial_str}) found in Slot {slot_id}.")
                             except ValueError:
-                                logger.warning(f"Could not parse SlotId '{blade.slot_id}' as an integer for blade (Moid: {blade_debug_id}) in chassis '{chassis_name}'. Skipping this blade for population check.")
-                        else:
-                            logger.warning(f"Blade (Moid: {blade_debug_id}) in chassis '{chassis_name}' is missing SlotId information or SlotId is null. Skipping for population check.")
-                else:
-                    logger.debug(f"No blades found via API query for chassis '{chassis_name}' or unexpected API response. All slots will be marked as Empty.")
+                                logger.warning(f"Could not parse SlotId '{blade.slot_id}' for a blade in chassis '{chassis_name}'.")
 
-                # --- MODIFICATION START: Handle multi-slot blades ---
-                # Create a new dictionary to hold all occupied slots, including the second
-                # slot for two-slot servers, by expanding the initial slot details.
+                # For CSV output: expand details to cover all slots occupied by multi-slot blades
                 expanded_slots_details = {}
                 for slot_id, details in populated_slots_details.items():
                     expanded_slots_details[slot_id] = details
-                    # If the blade model is one of the two-slot models, mark the next slot as occupied as well.
                     if details['model'] in TWO_SLOT_MODELS:
                         next_slot_id = slot_id + 1
                         if next_slot_id <= total_slots:
-                            # The next slot is occupied by the same blade.
                             expanded_slots_details[next_slot_id] = details
-                        else:
-                            logger.warning(f"Two-slot blade '{details['model']}' in slot {slot_id} of chassis '{chassis_name}' extends beyond the chassis capacity of {total_slots} slots.")
 
-                # Ensure the chassis model key exists in the summary dictionary
+                # --- MODIFICATION START: Corrected Summary Calculation ---
                 model_summary_counts.setdefault(chassis_model_str, {})
 
-                # Iterate through all slots and write a row for each one.
+                # 1. Count each populated blade once towards its status.
+                for details in populated_slots_details.values():
+                    status = reported_chassis_oper_state
+                    model_summary_counts[chassis_model_str].setdefault(status, 0)
+                    model_summary_counts[chassis_model_str][status] += 1
+
+                # 2. Calculate the number of total slots occupied by blades.
+                slots_occupied_by_blades = 0
+                for details in populated_slots_details.values():
+                    slots_occupied_by_blades += 2 if details['model'] in TWO_SLOT_MODELS else 1
+
+                # 3. Add the count of empty slots to the summary.
+                num_empty_slots = total_slots - slots_occupied_by_blades
+                if num_empty_slots > 0:
+                    model_summary_counts[chassis_model_str].setdefault("Empty", 0)
+                    model_summary_counts[chassis_model_str]["Empty"] += num_empty_slots
+                # --- MODIFICATION END ---
+
+                # Loop to write each slot's status to the CSV (summary is no longer calculated here)
                 for slot_num in range(1, total_slots + 1):
                     final_oper_state_for_csv = "Empty"
                     current_blade_model = ""
                     current_blade_serial = ""
 
-                    # Check the expanded dictionary to see if the slot is occupied.
                     if slot_num in expanded_slots_details:
                         details = expanded_slots_details[slot_num]
                         final_oper_state_for_csv = reported_chassis_oper_state
@@ -175,34 +158,23 @@ def main():
                         'OperState': final_oper_state_for_csv
                     })
 
-                    # Update summary counts. This will now correctly count both slots of a two-slot server as 'OK' (or other state).
-                    model_summary_counts[chassis_model_str].setdefault(final_oper_state_for_csv, 0)
-                    model_summary_counts[chassis_model_str][final_oper_state_for_csv] += 1
-                # --- MODIFICATION END ---
-                
                 logger.info(f"Finished writing slot information for chassis '{chassis_name}'.")
 
             logger.info(f"Successfully wrote blade slot information to '{args.csv_file}'")
 
-            # --- Append Summary Section ---
+            # --- Append Summary Section (no changes here) ---
             logger.info("Appending summary of slot statuses per chassis model...")
-            # Add some blank rows for separation
-            writer.writerow({}) # Empty dict writes a blank line
             writer.writerow({})
-
-            # Write a title for the summary section
+            writer.writerow({})
             summary_title_row = {field: '' for field in fieldnames}
             summary_title_row['Chassis'] = "--- Summary by Chassis Model ---"
             writer.writerow(summary_title_row)
-            
-            # Write header for the summary data
             summary_header_row = {field: '' for field in fieldnames}
             summary_header_row['Chassis'] = "Chassis Model"
-            summary_header_row['ChassisModel'] = "Slot Status" # Using ChassisModel column for Status
-            summary_header_row['ChassisSerial'] = "Count"     # Using ChassisSerial column for Count
+            summary_header_row['ChassisModel'] = "Slot Status"
+            summary_header_row['ChassisSerial'] = "Count"
             writer.writerow(summary_header_row)
 
-            # Write the summary data
             for model, status_counts in model_summary_counts.items():
                 for status, count in status_counts.items():
                     summary_data_row = {field: '' for field in fieldnames}
@@ -213,25 +185,14 @@ def main():
             
             logger.info("Summary appended successfully.")
 
-
     except intersight.OpenApiException as e:
         error_details = f"Status: {e.status}, Reason: {e.reason}"
         if e.body: error_details += f", Body: {e.body[:500]}..."
-        if e.headers: error_details += f", Headers: {e.headers}"
         logger.error(f"Intersight API Exception occurred: {error_details}")
-        traceback.print_exc()
-    except FileNotFoundError:
-        logger.error(f"Error: The specified CSV file path '{args.csv_file}' was not found or is invalid.")
-        traceback.print_exc()
-    except PermissionError:
-        logger.error(f"Error: Insufficient permissions to write to '{args.csv_file}'.")
-        traceback.print_exc()
-    except AttributeError as e:
-        logger.error(f"An AttributeError occurred: {e}. This might be due to unexpected API response structure or an issue with the credentials module setup.")
         traceback.print_exc()
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
         traceback.print_exc()
 
 if __name__ == "__main__":
-    main()      
+    main()
